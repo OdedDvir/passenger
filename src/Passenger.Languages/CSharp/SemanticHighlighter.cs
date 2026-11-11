@@ -1,3 +1,5 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Passenger.Core;
 using Passenger.Editor;
 using Passenger.Lsp;
@@ -74,7 +76,36 @@ public sealed class SemanticHighlighter : CarriedColours
     {
         IReadOnlyList<SyntaxSpan> parsed = Syntax.GetSpans(snapshot, start, length);
         Shown(start, length);
-        return Over(parsed, Visible(start, start + length));
+        List<SyntaxSpan> colours = Visible(start, start + length);
+        if (Syntax is CSharpHighlighter { Newest: { } syntax } && ReferenceEquals(syntax.Text, snapshot))
+        {
+            KeepMemberCalls(parsed, colours, syntax.Root);
+        }
+        return Over(parsed, colours);
+    }
+
+    /// <summary>Roslyn uses "variable" for both locals and unresolved names. A member call's name cannot be a local;
+    /// keep its syntax colour, while a bare delegate call still takes the server's local or parameter colour.</summary>
+    private static void KeepMemberCalls(IReadOnlyList<SyntaxSpan> parsed, List<SyntaxSpan> colours, SyntaxNode root)
+    {
+        int p = 0;
+        for (int i = 0; i < colours.Count; i++)
+        {
+            SyntaxSpan colour = colours[i];
+            if (colour.Kind != TokenKind.Local)
+            {
+                continue;
+            }
+            while (p < parsed.Count && parsed[p].End <= colour.Start)
+            {
+                p++;
+            }
+            if (p < parsed.Count && parsed[p].Kind == TokenKind.Method && parsed[p].Start == colour.Start && parsed[p].Length == colour.Length
+                && root.FindToken(colour.Start).Parent is SimpleNameSyntax { Parent: MemberAccessExpressionSyntax or MemberBindingExpressionSyntax })
+            {
+                colours[i] = colour with { Kind = TokenKind.Method };
+            }
+        }
     }
 
     public override void Showing(TextSnapshot snapshot, int start, int length)
